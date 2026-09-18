@@ -1,0 +1,92 @@
+name: Measure KAEL Sigstore keyless attestation
+
+on:
+  push:
+    paths:
+      - ".github/workflows/measure-sigstore.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: "v3.0.6"
+
+      - name: Build deterministic review payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          payload = {
+              "schema": "kael-independent-review/measurement-1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "repository_id": os.environ["GITHUB_REPOSITORY_ID"],
+              "repository_owner": os.environ["GITHUB_REPOSITORY_OWNER"],
+              "repository_owner_id": os.environ["GITHUB_REPOSITORY_OWNER_ID"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "event_name": os.environ["GITHUB_EVENT_NAME"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+          }
+          with open("review-measurement.json", "w", encoding="utf-8") as f:
+              json.dump(payload, f, sort_keys=True, separators=(",", ":"))
+              f.write("\n")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Sign payload keylessly
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob             --yes             --bundle sigstore-bundle.json             review-measurement.json
+
+      - name: Verify trusted workflow identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_identity="https://github.com/kael-trust/kael-independent-review/.github/workflows/measure-sigstore.yml@refs/heads/main"
+          cosign verify-blob             --bundle sigstore-bundle.json             --certificate-identity "$expected_identity"             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"             review-measurement.json
+
+      - name: Print non-secret bundle evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum review-measurement.json sigstore-bundle.json
+          python3 - <<'PY'
+          import json
+          with open("sigstore-bundle.json", encoding="utf-8") as f:
+              b = json.load(f)
+          print("bundle_mediaType:", b.get("mediaType"))
+          vm = b.get("verificationMaterial") or {}
+          cert = vm.get("certificate") or {}
+          if cert:
+              print("certificate_present: true")
+          tlog = vm.get("tlogEntries") or []
+          print("tlog_entries:", len(tlog))
+          print("message_signature_present:", bool(b.get("messageSignature")))
+          PY
+
+      - name: Record result summary
+        shell: bash
+        run: |
+          {
+            echo "## KAEL keyless attestation measurement"
+            echo
+            echo "- Keyless signing: PASS"
+            echo "- OIDC issuer: https://token.actions.githubusercontent.com"
+            echo "- Expected identity: https://github.com/kael-trust/kael-independent-review/.github/workflows/measure-sigstore.yml@refs/heads/main"
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Workflow SHA: ${GITHUB_WORKFLOW_SHA}"
+            echo "- Payload SHA256: $(sha256sum review-measurement.json | awk '{print $1}')"
+            echo "- Bundle SHA256: $(sha256sum sigstore-bundle.json | awk '{print $1}')"
+          } >> "$GITHUB_STEP_SUMMARY"
