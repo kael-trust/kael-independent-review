@@ -1,0 +1,87 @@
+name: KAEL independent review
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Exact 40-hex KAEL commit to review"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate candidate identifier
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "candidate_sha must be exactly 40 lowercase hex characters" >&2
+            exit 2
+          fi
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact KAEL commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zoeboymk-glitch/kael
+          ref: ${{ steps.candidate.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: candidate
+
+      - name: Prove exact immutable commit
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git -C candidate rev-parse HEAD)"
+          test "$actual" = "$CANDIDATE_SHA"
+          test "$(git -C candidate rev-parse --is-shallow-repository)" = "true"
+          printf 'candidate_sha=%s\n' "$actual"
+
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: "v3.0.6"
+
+      - name: Emit pre-review measurement only
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          root = "candidate"
+          tree = subprocess.check_output(["git","-C",root,"rev-parse","HEAD^{tree}"], text=True).strip()
+          policy = json.load(open("policy/trust-policy-v1.json")) if os.path.exists("policy/trust-policy-v1.json") else None
+          out = {
+            "schema": "kael-independent-review/pre-review-v1",
+            "candidate_sha": os.environ["CANDIDATE_SHA"],
+            "candidate_tree": tree,
+            "source_repository": "zoeboymk-glitch/kael",
+            "trusted_repository": os.environ["GITHUB_REPOSITORY"],
+            "trusted_workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+            "trusted_workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+            "status": "SOURCE_BOUND_ONLY",
+            "authoritative_review": False
+          }
+          with open("pre-review.json","w") as f:
+            json.dump(out,f,sort_keys=True,separators=(",",":")); f.write("\n")
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          cosign sign-blob --yes --bundle pre-review.sigstore.json pre-review.json
+          expected="https://github.com/kael-trust/kael-independent-review/.github/workflows/independent-review.yml@refs/heads/main"
+          cosign verify-blob --bundle pre-review.sigstore.json             --certificate-identity "$expected"             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"             pre-review.json
