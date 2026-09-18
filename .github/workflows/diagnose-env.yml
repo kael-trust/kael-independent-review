@@ -1,0 +1,18 @@
+name: Diagnose reusable trusted environment
+
+on:
+  workflow_call:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: independent-review
+    steps:
+      - name: Check trusted environment secret presence
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_API_KEY"
+          echo "trusted_environment_secret_present=true"
