@@ -1,0 +1,25 @@
+{
+  "schema": "kael-independent-review/trust-policy-v1",
+  "signer": {
+    "oidc_issuer": "https://token.actions.githubusercontent.com",
+    "certificate_identity": "https://github.com/kael-trust/kael-independent-review/.github/workflows/independent-review.yml@refs/heads/main",
+    "repository": "kael-trust/kael-independent-review",
+    "repository_id": "1376300730",
+    "repository_owner": "kael-trust",
+    "repository_owner_id": "331017312"
+  },
+  "reviewed_source": {
+    "repository": "zoeboymk-glitch/kael",
+    "repository_id": "1346735400",
+    "sha_format": "^[0-9a-f]{40}$"
+  },
+  "acceptance": {
+    "authoritative_verdicts": [
+      "A",
+      "B"
+    ],
+    "required_integrity": "OK",
+    "require_zero_blockers": true
+  },
+  "note": "The NAS/local state/reviews store is a non-authoritative cache. Authority derives from a valid Sigstore bundle satisfying this policy."
+}
