@@ -1,0 +1,100 @@
+name: Reusable KAEL trust measurement
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate requested candidate
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "candidate_sha must be exactly 40 lowercase hex characters" >&2
+            exit 2
+          fi
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout caller repository at exact SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.candidate.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove caller source binding
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$CANDIDATE_SHA"
+          echo "source_repository=${GITHUB_REPOSITORY}"
+          echo "source_sha=$actual"
+          echo "source_tree=$(git rev-parse HEAD^{tree})"
+
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: "v3.0.6"
+
+      - name: Request OIDC token and write measured claims
+        shell: bash
+        env:
+          AUDIENCE: kael-independent-review
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$response")"
+          OIDC_TOKEN="$token" python3 - <<'PY'
+          import base64, json, os, subprocess
+          token = os.environ["OIDC_TOKEN"]
+          p = token.split(".")[1]
+          p += "=" * (-len(p) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(p.encode()))
+          tree = subprocess.check_output(["git","rev-parse","HEAD^{tree}"], text=True).strip()
+          out = {
+            "schema": "kael-independent-review/reusable-measurement-1",
+            "candidate_sha": os.environ["CANDIDATE_SHA"],
+            "candidate_tree": tree,
+            "repository": claims.get("repository"),
+            "repository_id": claims.get("repository_id"),
+            "repository_owner": claims.get("repository_owner"),
+            "repository_owner_id": claims.get("repository_owner_id"),
+            "workflow_ref": claims.get("workflow_ref"),
+            "workflow_sha": claims.get("workflow_sha"),
+            "job_workflow_ref": claims.get("job_workflow_ref"),
+            "job_workflow_sha": claims.get("job_workflow_sha"),
+            "issuer": claims.get("iss"),
+            "subject": claims.get("sub"),
+            "audience": claims.get("aud"),
+            "runner_environment": claims.get("runner_environment"),
+            "run_id": claims.get("run_id"),
+            "run_attempt": claims.get("run_attempt"),
+          }
+          with open("reusable-measurement.json","w",encoding="utf-8") as f:
+            json.dump(out,f,sort_keys=True,separators=(",",":")); f.write("\n")
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+      - name: Sign measurement keylessly
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle reusable-measurement.sigstore.json reusable-measurement.json
+          sha256sum reusable-measurement.json reusable-measurement.sigstore.json
