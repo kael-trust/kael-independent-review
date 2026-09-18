@@ -1,0 +1,26 @@
+name: Measure cross-repo source access
+
+on:
+  push:
+    paths:
+      - ".github/workflows/measure-crossrepo.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test trusted workflow token against source repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/repo.json -w '%{http_code}'             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github+json"             https://api.github.com/repos/zoeboymk-glitch/kael)"
+          echo "repo_http_status=$code"
+          test "$code" = "200"
+          contents_code="$(curl -sS -o /tmp/pkg.json -w '%{http_code}'             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Accept: application/vnd.github.raw+json"             https://api.github.com/repos/zoeboymk-glitch/kael/contents/package.json)"
+          echo "contents_http_status=$contents_code"
+          test "$contents_code" = "200"
