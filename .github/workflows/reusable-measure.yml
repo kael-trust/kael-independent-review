@@ -98,3 +98,22 @@ jobs:
           set -euo pipefail
           cosign sign-blob --yes --bundle reusable-measurement.sigstore.json reusable-measurement.json
           sha256sum reusable-measurement.json reusable-measurement.sigstore.json
+
+      - name: Print measured certificate identity extensions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json
+          b = json.load(open("reusable-measurement.sigstore.json"))
+          raw = b["verificationMaterial"]["certificate"]["rawBytes"]
+          open("cert.der","wb").write(base64.b64decode(raw))
+          PY
+          echo "=== certificate subject/SAN/extensions ==="
+          openssl x509 -inform DER -in cert.der -noout -subject -issuer -ext subjectAltName || true
+          openssl x509 -inform DER -in cert.der -noout -text |
+            awk '
+              /1\.3\.6\.1\.4\.1\.57264\./ {show=1; print; next}
+              show && /^[[:space:]]+[0-9A-Fa-f:.]+$/ {print; show=0; next}
+              show && /^[[:space:]]+[^ ]/ {print; show=0}
+            '
