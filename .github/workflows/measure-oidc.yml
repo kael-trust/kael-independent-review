@@ -1,0 +1,84 @@
+name: Measure KAEL review OIDC
+
+on:
+  push:
+    paths:
+      - ".github/workflows/measure-oidc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request OIDC token and print non-secret claims
+        shell: bash
+        env:
+          AUDIENCE: kael-independent-review
+        run: |
+          set -euo pipefail
+
+          response="$(
+            curl --fail --silent --show-error               -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}"
+          )"
+
+          token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$response")"
+
+          OIDC_TOKEN="$token" python3 - <<'PY'
+          import base64, json, os
+
+          token = os.environ["OIDC_TOKEN"]
+          parts = token.split(".")
+          if len(parts) != 3:
+              raise SystemExit("unexpected JWT shape")
+
+          payload = parts[1] + "=" * (-len(parts[1]) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload.encode()))
+
+          wanted = [
+              "iss",
+              "aud",
+              "sub",
+              "repository",
+              "repository_id",
+              "repository_owner",
+              "repository_owner_id",
+              "repository_visibility",
+              "workflow",
+              "workflow_ref",
+              "workflow_sha",
+              "job_workflow_ref",
+              "job_workflow_sha",
+              "ref",
+              "ref_type",
+              "sha",
+              "actor",
+              "actor_id",
+              "event_name",
+              "runner_environment",
+              "run_id",
+              "run_number",
+              "run_attempt",
+          ]
+
+          selected = {k: claims.get(k) for k in wanted if k in claims}
+          print(json.dumps(selected, indent=2, sort_keys=True))
+          PY
+
+      - name: Record trust-boundary summary
+        shell: bash
+        run: |
+          {
+            echo "## KAEL trusted-side OIDC measurement"
+            echo
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Repository ID: ${GITHUB_REPOSITORY_ID}"
+            echo "- Owner ID: ${GITHUB_REPOSITORY_OWNER_ID}"
+            echo "- Workflow ref: ${GITHUB_WORKFLOW_REF}"
+            echo "- Workflow SHA: ${GITHUB_WORKFLOW_SHA}"
+            echo "- Commit SHA: ${GITHUB_SHA}"
+            echo "- Runner: ${RUNNER_ENVIRONMENT:-github-hosted}"
+          } >> "$GITHUB_STEP_SUMMARY"
